@@ -1,0 +1,80 @@
+---
+title: "0 - Political videos extraction"
+author: "Alberto Agudo Domínguez"
+date: '2022-05-24'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# General requests packages:
+library("httr")
+library("jsonlite")
+# Twitter API package: 
+library("rtweet")
+# General manipulation libraries:
+library("stringr")
+library("tidyverse")
+```
+
+In this rmarkdown file I will deploy the requests to the Twitter API necessary to extract the political videos of the Spanish election campaign of November 2019.
+
+## 1. Twitter API setup
+
+First, let us load the Twitter API key:
+
+```{r, eval = FALSE}
+#authentication <- list(consumer_key = "API_key",
+#                 consumer_secret = "API_key_secret",
+#                 access_token = "access_token",
+#                 access_token_secret = "access_token_secret")
+#save(authentication, file = "tw_authentication.rda")
+
+load("tw_authentication.rda")
+```
+
+Now open the session with the token:
+```{r}
+twitter_token <- create_token(app = "Agudo API Data Science", 
+                              consumer_key = authentication$consumer_key,
+                              consumer_secret = authentication$consumer_secret,
+                              access_token = authentication$access_token,
+                              access_secret = authentication$access_token_secret)
+```
+
+Basic proof that the API is working:
+```{r}
+lookup_users("LSEnews")$screen_name
+```
+
+### Downloading recent tweets from a specific user
+
+There is a function within rtweet to retrieve the timeline of tweets of a specific user. We would like to get back to the tweets of November 2019. Nevertheless, there is a maximum of 3,200 tweets per account. Hence, we might have to signal directly the tweets that we need.
+
+First, let us determine the Twitter accounts of the political candidates and their parties that we would like to investigate:
+
+```{r}
+# We will create a list of parties and their respective political candidates and official accounts.
+# Structure -> Party name in lower case letters (name of vector). Then a vector with:
+# 1) Name of main political candidate
+# 2) Name of official account
+# Additional: Other important political candidates or political accounts
+users <- list("vox" = list("political_candidate" = "Santi_ABASCAL", 
+                           "official_party_account" = "vox_es",
+                           "additional_politicians" = c(""),
+                           "additional_party_accounts" = c("")))
+```
+
+
+
+
+
+```{r}
+tweets_abascal <- get_timeline(users$vox$political_candidate, n = 3200)
+tweets <- get_timeline("JoeBiden", n = 1000)
+```
+

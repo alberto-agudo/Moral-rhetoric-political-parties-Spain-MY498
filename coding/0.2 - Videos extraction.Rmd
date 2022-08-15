@@ -1,0 +1,259 @@
+---
+title: "1.1-Videos extraction"
+author: "Alberto Agudo Domínguez"
+date: '2022-07-17'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+---
+
+```{r}
+library(tidyverse)
+library(RSelenium)
+
+options(scipen = 9999)
+```
+
+## 1) Select which tweets might contain videos
+
+```{r}
+# Read our tweets dataframe:
+tweets_df <- read_csv("../data/clean/tweets_df.csv", col_types = cols(status_id = "c"))
+
+# Get all tweets that might contain a video
+# (Those for which media_type is "photo" are restrictive. Rather, we should
+# get all videos that include a link in the tweet):
+tweets_df$has_https <- grepl("https.*", tweets_df$text)
+
+round(sum(tweets_df$has_https) / nrow(tweets_df) * 100, 2) 
+
+tweets_df
+```
+
+94% of the tweets contain a link. It could be to either other websites, or media. Hence, there is a big source of information here.
+
+## 2) Create the Selenium search:
+
+```{r message=FALSE, warning=FALSE}
+# Set up the download directory:
+download_dir <- normalizePath("../data/raw/audio_files") 
+
+# Set firefox preferences for downloads location
+fprof <- makeFirefoxProfile(list(browser.download.manager.showWhenStarting = FALSE,
+                                 browser.download.alwaysOpenPanel = FALSE,     
+                                 browser.download.dir = download_dir,
+                                 browser.helperApps.neverAsk.saveToDisk="text/csv",
+                                 browser.helperApps.neverAsk.saveToDisk = "text/csv",
+                                 browser.download.folderList = 2L))
+
+# Initialize the browser
+rD<- rsDriver(browser = c("firefox"), extraCapabilities = fprof)
+driver <- rD$client
+
+# Check that it is navigating properly
+url <- "https://f2mp.com/twitter"
+driver$navigate(url)
+```
+
+
+```{r}
+# Set up the selectors:
+css <- list()
+
+css$search_box <- '#txt-url'
+css$search_btn <- '#btn-start'
+css$audio_mode_btn <- '.active+ li a'
+css$audio_mode_btn2 <- '.nav-tabs > li:nth-child(2) > a:nth-child(1)'
+css$process_audio_btn <- '.btn-download-audio'
+css$error_message <- '#result-errors > span:nth-child(3)'
+css$download_btn <- 'button.btn-success:nth-child(2)'
+css$close_download_btn <- '.btn-default'
+```
+
+
+
+```{r}
+# Search procedure per each tweet
+for (row in 1:nrow(tweets_df)){
+  print(paste0("ROW: ", row))
+  print(final_tweets[[row, "text"]])
+  
+  has_https <- final_tweets[[row, "has_https"]]
+  print(paste0("HAS HTTPS: ", has_https))
+    # If the tweet does not have a link, go to the next one
+    if (has_https){
+  
+      status_id <- final_tweets[[row, "status_id"]]
+      tweet_link <- final_tweets[[row, "status_url"]]
+      
+      print(paste0("STATUS ID: ", status_id))
+      print(paste0("LINK: ", tweet_link))
+      
+      # Get the directory to compare at the end and get the name of the new files
+      beginning_dir <- list.files(download_dir)
+      
+      # Items for the search
+      search_box <- driver$findElement(using = "css", value = css$search_box)
+      search_btn <- driver$findElement(using = "css", value = css$search_btn)
+      
+      # Type the URL and find the item
+      search_box$sendKeysToElement(list(tweet_link))
+      search_btn$clickElement()
+      
+      # Give enough time before checking whether there is an error
+      Sys.sleep(1.5)
+      
+      # Click the audio mode for download
+      audio_mode_btn <- driver$findElement(using = "css", value = css$audio_mode_btn2)
+      audio_mode_btn$clickElement()
+      
+      # Check that there have not been any errors:
+      error_message <- driver$findElement(using = "css", value = css$error_message)
+      error_text <- error_message$getElementText()[[1]]
+      
+      # This error appears when the file is not a video. In that case, the code
+      # does not run and we jump to the following tweet
+      while (error_text == ""){
+        
+        Sys.sleep(0.1)
+        # Start processing the mp3 file
+        process_audio_btn <- driver$findElement(using = "css", value = css$process_audio_btn)
+        process_audio_btn$clickElement()
+        Sys.sleep(0.5)
+        
+        # Find the download button
+        download_btn <- driver$findElement(using = "css",
+                                           value = css$download_btn)
+        
+        download_text <- download_btn$getElementText()[[1]]
+        
+        # Wait until the audio has been processed
+        while ((download_text == "") & (error_text == "")){
+          
+          Sys.sleep(2)
+          
+          # Check again that there is not any error after applying the search:
+          error_message <- driver$findElement(using = "css", value = css$error_message)
+          error_text <- error_message$getElementText()[[1]]
+          
+          # Sometimes you need to click again
+          audio_mode_btn <- driver$findElement(using = "css", value = css$audio_mode_btn2)
+          audio_mode_btn$clickElement()
+          process_audio_btn <- driver$findElement(using = "css", value = css$process_audio_btn)
+          process_audio_btn$clickElement()
+          download_btn <- driver$findElement(using = "css",
+                                           value = css$download_btn)
+          download_text <- download_btn$getElementText()[[1]]
+          print("Waiting for download button to appear")
+        }
+        
+        # Sometimes the search returns an error after clicking the item
+        # In that case, break the while loop
+        if (error_text != ""){
+          break
+        }
+        
+        # Once the audio has been processed, download it:
+        download_btn$clickElement()
+        
+        # Close download
+        close_button <- driver$findElement(using = "css", 
+                                           value = css$close_download_btn)
+        close_button$clickElement()  
+        
+        # Finally, get the name of the new file and rename it according to 
+        # the status id of the tweet (introduce a while loop to wait for the download)
+        end_dir <- list.files(download_dir)
+        new_file <- setdiff(end_dir, beginning_dir)
+        while ((identical(new_file, character(0))) | (length(new_file) == 2)){
+          Sys.sleep(1)
+          end_dir <- list.files(download_dir)
+          new_file <- setdiff(end_dir, beginning_dir)
+          print("Waiting for file to be downloaded")
+        }
+        
+        file.rename(from = paste0(download_dir, "/", new_file), 
+                    to = paste0(download_dir, "/", status_id, ".mp3"))
+        
+        # Finally, change the error text to exit the loop
+        error_text <- "Finished"
+        
+      }
+      
+        # Clean search box for next step
+        search_box <- driver$findElement(using = "css", value = css$search_box)
+        search_box$clearElement()
+        
+        # Wait a bit to avoid overload:
+        Sys.sleep(0.2)
+    }
+  }
+```
+
+
+
+
+```{r}
+# First, let us see which of the tweets had a video:
+final_mp3s <- list.files(download_dir)
+clean_mp3s <- sapply(final_mp3s, FUN = function(x) substr(x, 1, nchar(x) - 4)) %>% 
+  unname(.)
+
+tweets_df$has_video <- tweets_df$status_id %in% clean_mp3s
+
+print(paste("There are", sum(tweets_df$has_video), "tweets that contain videos."))
+```
+
+After the download I will manually check which audios should be discarded. Some videos only show people in a meeting, or an event, so they are not useful to transcribe the audios to text.
+
+```{r}
+# Out of those videos, which ones are worth transcribing (i.e., they are not simply a video without people speaking)?
+# In the order of added audios
+# 0: No audio, 
+# 0.25: There are no politicians speaking (or very marginally)
+# 0.33: There is a politician, but too many people arguing at the same time
+# 0.5: Bad quality audio (like an interview with a lot of noise, or sometimes
+#   a politician interrupts the speaker),
+# 0.75: Good audio, but there are other politicians or moderators speaking at some point (or high music, even though the voice can be properly heard)
+# 1: High quality audio, only one speaker from the party.
+# -1: Duplicated
+# -2: Audio not in Spanish
+
+# Create an excel where we can keep track of which audio are we listening to,
+# and categorize its quality:
+#remaining_audios <- length(final_mp3s) - length(audio_quality)
+#
+##audio_quality <- c(audio_quality, rep(NA, remaining_audios))
+#
+#audios_df <- data.frame(final_mp3s = apply(tweets_df[tweets_df$has_video == T, 
+#                                                     "status_id"], 
+#                                           MARGIN = 1, 
+#                                           FUN = function(x) paste0(x, ".mp3")), 
+#                        audio_quality)
+#
+#rio::export(audios_df, "../data/raw/audios_df.xlsx")
+
+
+# Export also the tweets_df dataframe now that we know which tweets contained videos:
+write.csv(tweets_df, "../data/clean/tweets_df.csv", row.names = F)
+```
+
+
+Lastly, let us close the driver and browser:
+
+```{r}
+driver$close()
+rD$server$stop()
+```
+
+
+
+

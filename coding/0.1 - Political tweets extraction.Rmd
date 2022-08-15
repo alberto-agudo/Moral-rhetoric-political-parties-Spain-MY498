@@ -1,0 +1,256 @@
+---
+title: "0 - Political videos extraction"
+author: "Alberto Agudo Domínguez"
+date: '2022-05-24'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# General requests packages:
+library("httr")
+library("jsonlite")
+# Twitter API package: 
+library("rtweet")
+# General manipulation libraries:
+library("stringr")
+library("tidyverse")
+```
+
+In this rmarkdown file I will deploy the requests to the Twitter API necessary to extract the political videos of the Spanish election campaign of November 2019.
+
+## 1. Twitter API setup
+
+First, let us load the Twitter API key:
+
+```{r, eval = FALSE}
+#bearer_token <- "a"
+#authentication <- list(consumer_key = "a",
+#                 consumer_secret = "a",
+#                 access_token = "a",
+#                 access_token_secret = "a")
+#save(authentication, file = "api_keys/tw_authentication.rda")
+#save(bearer_token, file = "api_keys/bearer_token.rda")
+
+load("api_keys/tw_authentication.rda")
+load("api_keys/bearer_token.rda")
+```
+
+Now open the session with the token:
+
+```{r}
+twitter_token <- create_token(app = "Political videos alberto agudo", 
+                              consumer_key = authentication$consumer_key,
+                              consumer_secret = authentication$consumer_secret,
+                              access_token = authentication$access_token,
+                              access_secret = authentication$access_token_secret)
+```
+
+Basic proof that the API is working:
+
+```{r}
+lookup_users("LSEnews")$screen_name
+```
+
+## 2. Consideration of API endpoints
+
+There is a function within rtweet to retrieve the timeline of tweets of a specific user. We would like to get back to the tweets of November 2019. Nevertheless, there is a maximum of 3,200 tweets per account. Hence, we might have to signal directly the tweets that we need.
+
+First, let us determine the Twitter accounts of the political candidates and their parties that we would like to investigate:
+
+```{r}
+# We will create a df of parties and their respective political candidates and official accounts.
+# Structure -> Party name in upper case letters (name of vector). Then a vector with:
+# 1) Name of main political candidate
+# 2) Name of official account
+# Additional: Other important political candidates or political accounts
+
+parties <- rep(c("VOX", "PP", "CS", "PSOE", "PODEMOS"), each = 2)
+type <- rep(c("candidate", "party"), times = 5)
+account <- c("Santi_ABASCAL", "vox_es", "pablocasado_", "populares", 
+              "Albert_Rivera", "CiudadanosCs", "sanchezcastejon", "PSOE", 
+              "PabloIglesias", "PODEMOS")
+
+accounts_df <- tibble(parties, type, account)
+```
+
+When searching the timelines of users, only the last 3200 (including retweets) are extracted. Nevertheless, if we specify not including tweets, the output of the query is the same, although removing retweets. In other words, we cannot get any farther back than 3200 tweets (+ retweets) with the timeline feature. For instance, for @Santi_ABASCAL, we can only get as far back as May 2021.
+
+Hence, we should use the [Full Archive Search API](https://developer.twitter.com/en/docs/tutorials/getting-historical-tweets-using-the-full-archive-search-endpoint). This is a premium API (only accessible through academic research access) developed to run queries on the full archive of Tweets, running from 2006.
+
+I got permission to use the Sandbox environment of the Full Archive Search, which allows for 50 requests/month and 5000 tweets/month. Furthermore, each request is capped at 100 tweets, which is directly handled by the `rtweet` package. Nevertheless, given that there were only seven days of political campaign, we will set a maximum of 500 tweets per account. We will dive deeper to see whether it is true or not.
+
+Note: These are the general terms of use of my current access to the Full Archive Search of the Twitter API:
+
+![Full archive search free access characteristics](images/Full_archive_search_API_features.png "Full archive search free access characteristics") 
+
+## 3. Extraction of tweets
+
+### a) Political candidates accounts
+
+Let us make a first search with one of the political candidates and see whether this outputs the expected result.
+
+Some notes on the queries: - All operators are evaluated in a case-insensitive manner (i.e., "cat" in the query, will return Tweets that include "Cat", "cat" or even "CAT".) - To negate a keyword of the query we can prepend a dash "-", although this was still not implemented in v1, which is used by the `rtweet` package. v2 of the API is indeed used in the `academictwitteR` package, but we do not need to go that far back in time.
+
+Both tweets and retweets will be included. We will assume henceforth that retweets show endorsement.
+
+```{r eval=FALSE, include=FALSE}
+# Full archive search API:
+# All tweets from Santi_ABASCAL from the beginning of the campaign (before the 1st of November)
+# until the end (before the 9th of November).
+#environment_name <- "novembercampaign"
+abascal_tweets <- search_fullarchive("from:Santi_ABASCAL", n = 500, 
+                                     fromDate = "201910312359", 
+                                     toDate = "201911090000", 
+                                     env_name = environment_name)
+
+abascal_tweets %>% arrange(desc(favorite_count)) %>% select(text, is_quote, is_retweet, 
+                                                            favorite_count, 
+                                                            retweet_count, reply_count,
+                                                            urls_url) %>% unnest(cols = #"urls_url")
+```
+
+```{r}
+# Download tweets from all the other political candidates
+candidates_accounts <- accounts_df %>% 
+  filter(type == "candidate" & parties != "VOX") %>% 
+  .[["account"]]
+
+tweets_df <- data.frame()
+for (candidate in candidates_accounts){
+  query <- paste0("from:", candidate)
+  search_df <- search_fullarchive(query, n = 500, 
+                                  fromDate = "201910312359", 
+                                  toDate = "201911090000", 
+                                  env_name = environment_name)
+    
+  tweets_df <- rbind(tweets_df, search_df)
+  
+  print(paste(candidate, "finished"))
+  # Avoid hitting more than 10 requests per minute.
+  Sys.sleep(6)
+}
+```
+
+```{r}
+# Add the previous dataframe, which included tweets by the main VOX political candidate:
+tweets_df <- rbind(tweets_df, abascal_tweets) %>% as_tibble()
+
+# Save the file with all tweets data.
+saveRDS(tweets_df, "../data/raw_extractions/candidates_tweets.rds")
+
+# Show the amount of tweets published by each candidate
+tweets_df %>% group_by(screen_name) %>% summarise(n_tweets = n()) %>% 
+  arrange(desc(n_tweets))
+```
+
+The results show that the number of tweets (retweets included) ranged from 76 to 183. Hence, no candidate hit the cap of 500 tweets that we delimited.
+
+### b) Political parties accounts
+
+```{r}
+# Download tweets from all parties' accounts
+parties_accounts <- accounts_df %>% 
+  filter(type == "party") %>% 
+  .[["account"]]
+
+tweets_parties_df <- data.frame()
+for (party in parties_accounts){
+  query <- paste0("from:", party)
+  search_df <- search_fullarchive(query, n = 500, 
+                                  fromDate = "201910312359", 
+                                  toDate = "201911090000", 
+                                  env_name = environment_name)
+    
+  tweets_parties_df <- rbind(tweets_parties_df, search_df)
+  
+  print(paste(party, "finished"))
+  print(paste("Number of tweets extracted:", nrow(search_df)))
+  # Avoid hitting more than 10 requests per minute.
+  Sys.sleep(6)
+}
+```
+
+```{r}
+# Save tweets
+saveRDS(tweets_parties_df, "../data/raw_extractions/tweets_parties_df.rds")
+
+# Show the amount of tweets published by each account
+tweets_parties_df %>% group_by(screen_name) %>% summarise(n_tweets = n()) %>% 
+  arrange(desc(n_tweets))
+```
+
+In this case we can see how all accounts reached the cap of tweets that we set before (500). This shows the intensity of the campaign in official party accounts, as compared with political candidates'.
+
+## 4. Cleaning the data
+
+Now that we have extracted the tweets from the campaign, we can clean them and load them into an SQL database.
+
+```{r}
+all_tweets <- rbind(tweets_df, tweets_parties_df)
+```
+
+### a) Removing duplicates
+
+Before loading the data into a relational database, we should remove all the duplicates that will probably stem from a candidate retweeting their party tweets, and vice versa.
+
+```{r}
+# Count the number of retweets that have already been published by other account
+repeated_rts <- all_tweets$retweet_status_id %in% all_tweets$status_id
+sum(repeated_rts)
+
+# Remove all retweets that are published by one of the accounts:
+all_tweets <- all_tweets[!repeated_rts, ]
+
+all_tweets %>% nrow()
+```
+
+In total, there were 350 retweets that came from tweets already extant in the dataset. After removing them, there are 2848 tweets left. Now, let us see what variables might be important:
+
+### b) Removing irrelevant columns and adding account information:
+
+We will now choose which columns are important and discard all the others retrieved by the Twitter API that might be considered irrelevant.
+
+```{r}
+# Choose the most important variables to retain:
+relevant_vars <- c("user_id",  "screen_name", "name", "status_id", "created_at", "text",
+                   "status_url", "reply_to_status_id", "reply_to_user_id",
+                   "reply_to_screen_name", "is_quote", "is_retweet", "favorite_count",
+                   "retweet_count","quote_count", "reply_count", 
+                   "media_type", "quoted_status_id", "quoted_user_id",
+                   "quoted_screen_name", "quoted_name", "quoted_text", "quoted_created_at",
+                   "quoted_favorite_count", "quoted_retweet_count", "retweet_status_id",
+                   "retweet_user_id", "retweet_screen_name", "retweet_name",
+                   "retweet_favorite_count", "retweet_retweet_count", 
+                   "followers_count")
+
+# Join the dataframe that contains information about political candidates and 
+# include only the relevant columns:
+all_tweets <- accounts_df %>%
+  left_join(all_tweets[, relevant_vars],
+            by = c("account" = "screen_name")) %>% 
+  rename("party" = "parties", "screen_name" = "account")
+
+# Clean the media column, which comes in the shape of a list:
+all_tweets <- all_tweets %>% unnest(media_type)
+```
+
+## 5. Save dataset:
+
+```{r}
+write.csv(all_tweets, "../data/clean/tweets_df.csv", row.names = F)
+```
+
+
+## 6. Finally, export also the distribution of MFD 2.0:
+
+```{r}
+# Get the MFD 2.0 (Frimer et al., 2017) and transform it into a list:
+mfd_dict <- quanteda.dictionaries::data_dictionary_MFD
+ls_MFD_dict <- as.list(mfd_dict)
+saveRDS(ls_MFD_dict, "../data/mfd_dict.rds")
+```
+
